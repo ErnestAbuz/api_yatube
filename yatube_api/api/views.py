@@ -1,44 +1,32 @@
-from rest_framework import viewsets
+from rest_framework import permissions, viewsets
 from django.shortcuts import get_object_or_404
-from rest_framework import permissions
-from rest_framework.response import Response
-from rest_framework import status
+from django.core.exceptions import PermissionDenied
+
 from posts.models import Post, Group, Comment, User
 from .serializers import (PostSerializer,
                           GroupSerializer,
                           CommentSerializer,
                           UserSerializer)
+from .permissions import AuthorOrReadOnly
 
 
 class PostViewSet(viewsets.ModelViewSet):
     queryset = Post.objects.all()
     serializer_class = PostSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AuthorOrReadOnly]
 
     def perform_create(self, serializer):
         serializer.save(author=self.request.user)
 
-    def update(self, request, **kwargs):
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        serializer = self.get_serializer(instance,
-                                         data=request.data,
-                                         partial=partial
-                                         )
-        serializer.is_valid(raise_exception=True)
-        if instance.author == self.request.user:
-            self.perform_update(serializer)
-            if getattr(instance, 'prefetched_obj', None):
-                instance.prefetched_obj = {}
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_403_FORBIDDEN)
+    def perform_update(self, serializer):
+        if serializer.instance.author != self.request.user:
+            raise PermissionDenied('Изменение чужого контента запрещено!')
+        super(PostViewSet, self).perform_update(serializer)
 
-    def destroy(self, request, **kwargs):
-        instance = self.get_object()
-        if instance.author == self.request.user:
-            self.perform_destroy(instance)
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        return Response(status=status.HTTP_403_FORBIDDEN)
+    def perform_destroy(self, instance):
+        if instance.author != self.request.user:
+            raise PermissionDenied('Удаление чужого контента запрещено!')
+        super(PostViewSet, self).perform_destroy(instance)
 
 
 class GroupViewSet(viewsets.ReadOnlyModelViewSet):
@@ -47,49 +35,19 @@ class GroupViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class CommentViewSet(viewsets.ModelViewSet):
+    queryset = Comment.objects.all()
     serializer_class = CommentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AuthorOrReadOnly]
+
+    def get_post(self):
+        pk = self.kwargs.get('post_id')
+        return get_object_or_404(Post, id=pk)
 
     def get_queryset(self):
-        post_id = self.args
-        return Comment.objects.filter(post=post_id)
+        return self.get_post().comments.all()
 
     def perform_create(self, serializer):
-        post = Post.objects.get(id=self.request.parser_context.get('args')[0])
-        serializer.save(
-            post=post,
-            author=self.request.user
-        )
-
-    def retrieve(self, request, pk=None):
-        queryset = Comment.objects.all()
-        comment = get_object_or_404(queryset, pk=pk)
-        serializer = CommentSerializer(comment)
-        return Response(serializer.data)
-
-    def update(self, request, pk=None, **kwargs):
-        partial = kwargs.pop('partial', False)
-        queryset = Comment.objects.all()
-        instance = get_object_or_404(queryset, pk=pk)
-        serializer = self.get_serializer(instance,
-                                         data=request.data,
-                                         partial=partial
-                                         )
-        serializer.is_valid(raise_exception=True)
-        if instance.author == self.request.user:
-            self.perform_update(serializer)
-            if getattr(instance, 'prefetched_obj', None):
-                instance.prefetched_obj = {}
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_403_FORBIDDEN)
-
-    def destroy(self, request, pk=None):
-        queryset = Comment.objects.all()
-        instance = get_object_or_404(queryset, pk=pk)
-        if instance.author == self.request.user:
-            self.perform_destroy(instance)
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        return Response(status=status.HTTP_403_FORBIDDEN)
+        serializer.save(author=self.request.user, post=self.get_post())
 
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
